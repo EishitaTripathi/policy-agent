@@ -50,6 +50,7 @@ class RetrievedChunk:
     action_verb: str | None
     cross_refs: list[str] = field(default_factory=list)
     is_seed: bool = False
+    is_general_guideline: bool = False
     score: float = 0.0  # higher = more relevant (post-rerank if reranked)
     distance: float | None = None  # cosine distance from vector search
 
@@ -75,20 +76,32 @@ def _reranker():
 
 
 @lru_cache(maxsize=1)
-def _collection():
+def _client():
+    """Persistent Chroma client. Cached because re-instantiating the
+    PersistentClient is expensive and the underlying path doesn't change
+    within a process."""
     import chromadb
 
     _ensure_env()
     persist_path = Path(os.environ.get("CHROMA_PATH", DEFAULT_CHROMA_PATH))
-    collection_name = os.environ.get("CHROMA_COLLECTION", "gaggia_policy")
     if not persist_path.exists():
         raise RuntimeError(
             f"Chroma path {persist_path} does not exist. "
             "Run `python -m policy_agent.ingest` first."
         )
-    client = chromadb.PersistentClient(path=str(persist_path))
+    return chromadb.PersistentClient(path=str(persist_path))
+
+
+def _collection():
+    """Resolve the Chroma collection on every call. NOT cached because
+    a concurrent process (a running Gradio UI, a second ingest, etc.)
+    can re-ingest and recreate the collection under a new internal UUID;
+    a stale Collection object then fails subsequent queries with
+    "Collection [UUID] does not exist". Re-fetching from the client per
+    call picks up the current segment IDs from Chroma's SQLite metadata."""
+    collection_name = os.environ.get("CHROMA_COLLECTION", "gaggia_policy")
     try:
-        return client.get_collection(collection_name)
+        return _client().get_collection(collection_name)
     except Exception as exc:
         raise RuntimeError(
             f"Collection '{collection_name}' not found. "
@@ -105,6 +118,7 @@ def _to_chunk(meta: dict[str, Any], document: str, distance: float | None) -> Re
         action_verb=meta.get("action_verb") or None,
         cross_refs=json.loads(meta.get("cross_refs_json", "[]")),
         is_seed=bool(meta.get("is_seed", False)),
+        is_general_guideline=bool(meta.get("is_general_guideline", False)),
         distance=distance,
     )
 
@@ -161,6 +175,56 @@ def retrieve(
     for c in chunks:
         c.score = -(c.distance or 0.0)
     return chunks[:rerank_top_n]
+
+
+@lru_cache(maxsize=1)
+def fetch_general_guidelines() -> tuple[RetrievedChunk, ...]:
+    """Return all clauses tagged ``is_general_guideline=True`` at ingestion.
+
+    These are the §6 (General Conduct) clauses that apply to every Blue/Grey
+    request regardless of topic. The agent prompt no longer paraphrases
+    them — they arrive through the same retrieval channel as topic-specific
+    chunks, keeping the policy bundle the single source of truth.
+
+    Cached because the result is identical for every request after
+    ingestion. Sorted by ``section_id`` for stable ordering.
+    """
+    _ensure_env()
+    res = _collection().get(where={"is_general_guideline": True})
+    docs = res.get("documents") or []
+    metas = res.get("metadatas") or []
+    chunks = [_to_chunk(m, d, None) for m, d in zip(metas, docs)]
+    chunks.sort(key=lambda c: tuple(int(p) for p in c.section_id.split(".") if p.isdigit()))
+    return tuple(chunks)
+
+
+def retrieve_with_general_guidelines(
+    query: str,
+    *,
+    top_k: int | None = None,
+    rerank_top_n: int | None = None,
+    filters: dict | None = None,
+    use_reranker: bool = True,
+) -> list[RetrievedChunk]:
+    """Same as :func:`retrieve`, but prepends all general-guideline chunks
+    (deduplicated by ``section_id``) so they always appear in the context
+    passed to the agent."""
+    vector_hits = retrieve(
+        query,
+        top_k=top_k,
+        rerank_top_n=rerank_top_n,
+        filters=filters,
+        use_reranker=use_reranker,
+    )
+    general = list(fetch_general_guidelines())
+    seen = {c.section_id for c in general}
+    merged: list[RetrievedChunk] = list(general)
+    for c in vector_hits:
+        if c.section_id in seen:
+            continue
+        seen.add(c.section_id)
+        merged.append(c)
+    return merged
 
 
 if __name__ == "__main__":

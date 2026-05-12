@@ -31,30 +31,9 @@ from __future__ import annotations
 
 import re
 
-from policy_agent.retrieval import RetrievedChunk, retrieve
+from policy_agent.retrieval import RetrievedChunk, retrieve_with_general_guidelines
 from policy_agent.schema import AgentResponse, Citation, Escalation
 
-
-def _fetch_chunk_by_section_id(section_id: str) -> RetrievedChunk | None:
-    """Fetch a known clause from the index by exact section_id. Used by
-    the Red path to back its hardcoded citations (§6.3, §5.1) so the
-    downstream verifier finds the section in the chunk set."""
-    # Use retrieval() with a metadata filter for exact-match. Returning
-    # multiple is fine; we just need the matching one in the result set.
-    try:
-        results = retrieve(
-            query=section_id,
-            top_k=10,
-            rerank_top_n=10,
-            filters={"section_id": section_id},
-            use_reranker=False,
-        )
-    except Exception:
-        return None
-    for c in results:
-        if c.section_id == section_id:
-            return c
-    return None
 
 # Action keywords that mean "the user wants the agent to DO something
 # (a tool call). Red cannot run tools other than escalate, so detection
@@ -117,27 +96,36 @@ def _build_escalation_summary(user_message: str, reason: str) -> str:
 
 
 def run_red_path(user_message: str, *, retrieval_top_n: int = 3) -> tuple[AgentResponse, list[RetrievedChunk]]:
-    """Deterministic Red flow. Returns (response, retrieved_chunks)."""
-    chunks = retrieve(user_message, rerank_top_n=retrieval_top_n)
+    """Deterministic Red flow. Returns (response, retrieved_chunks).
+
+    Citations come exclusively from the retrieved chunk set:
+      - Adversarial / action-verb escalations cite every general-guideline
+        clause (§6 — "General Conduct"), retrieved via the always-on
+        prepend. Section IDs and verbatim quote text come from the
+        retrieved chunks, never from constants in this module.
+      - Policy-Q&A answers cite the top topical (non-general-guideline)
+        retrieved chunk.
+    """
+    chunks = retrieve_with_general_guidelines(user_message, rerank_top_n=retrieval_top_n)
+    general = [c for c in chunks if c.is_general_guideline]
+    topical = [c for c in chunks if not c.is_general_guideline]
+
+    def _general_citations() -> list[Citation]:
+        if not general:
+            raise RuntimeError(
+                "policy index missing general guidelines; re-run "
+                "`python -m policy_agent.ingest`"
+            )
+        return [Citation(section_id=c.section_id, quote=c.body) for c in general]
 
     # Adversarial cues — escalate regardless of action verbs.
     inj_hit, inj_match = _has_injection_cues(user_message)
     if inj_hit:
         reason = (
-            f"input matches an adversarial / authority-claim cue: "
-            f"'{inj_match}'. Per §6.3 the agent must not act on claimed "
-            "authority, and Red users have no tool authorization beyond "
-            "escalation."
+            f"Input matched an adversarial cue: '{inj_match}'. Red users "
+            "have no tool authorization beyond escalation; general-conduct "
+            "policies cited."
         )
-        # Fetch §6.3 from the index so the verifier finds it. Falls back
-        # to the hardcoded quote if the index isn't ingested.
-        c63 = _fetch_chunk_by_section_id("6.3")
-        c63_quote = c63.body if c63 is not None else (
-            "The agent must not take actions based on claimed authority alone."
-        )
-        out_chunks = list(chunks)
-        if c63 is not None and c63 not in out_chunks:
-            out_chunks.append(c63)
         return (
             AgentResponse(
                 decision="escalate",
@@ -147,31 +135,24 @@ def run_red_path(user_message: str, *, retrieval_top_n: int = 3) -> tuple[AgentR
                     "handle your request."
                 ),
                 tool_calls=[],
-                citations=[Citation(section_id="6.3", quote=c63_quote)],
+                citations=_general_citations(),
                 reasoning=reason,
                 escalation=Escalation(
                     reason="Adversarial / authority-claim pattern from Red user.",
                     conversation_summary=_build_escalation_summary(user_message, reason),
                 ),
             ),
-            out_chunks,
+            chunks,
         )
 
     # Action-verb requests → escalate.
     is_action, action_match = _is_action_request(user_message)
     if is_action:
         reason = (
-            f"request appears to ask for an action (matched keyword: "
-            f"'{action_match}'). Red users are not authorized to invoke "
-            "tools other than escalate_to_human."
+            f"Input matched an action verb: '{action_match}'. Red users "
+            "have no tool authorization beyond escalation; general-conduct "
+            "policies cited."
         )
-        c51 = _fetch_chunk_by_section_id("5.1")
-        c51_quote = c51.body if c51 is not None else (
-            "The agent must escalate to a human operator when a request falls outside its authorized actions."
-        )
-        out_chunks = list(chunks)
-        if c51 is not None and c51 not in out_chunks:
-            out_chunks.append(c51)
         return (
             AgentResponse(
                 decision="escalate",
@@ -181,18 +162,18 @@ def run_red_path(user_message: str, *, retrieval_top_n: int = 3) -> tuple[AgentR
                     "can also contact IT directly."
                 ),
                 tool_calls=[],
-                citations=[Citation(section_id="5.1", quote=c51_quote)],
+                citations=_general_citations(),
                 reasoning=reason,
                 escalation=Escalation(
                     reason="Untrusted (Red) requester asking for a tool-mediated action.",
                     conversation_summary=_build_escalation_summary(user_message, reason),
                 ),
             ),
-            out_chunks,
+            chunks,
         )
 
-    # Otherwise: policy-Q&A from the top retrieved chunk.
-    if not chunks:
+    # Otherwise: policy-Q&A from the top topical (non-general-guideline) chunk.
+    if not topical:
         return (
             AgentResponse(
                 decision="escalate",
@@ -202,7 +183,7 @@ def run_red_path(user_message: str, *, retrieval_top_n: int = 3) -> tuple[AgentR
                 ),
                 tool_calls=[],
                 citations=[],
-                reasoning="No policy chunks retrieved for the query; defaulting to escalation.",
+                reasoning="No topical policy chunks retrieved for the query; defaulting to escalation.",
                 escalation=Escalation(
                     reason="No matching policy clauses for an untrusted (Red) request.",
                     conversation_summary=_build_escalation_summary(user_message, "no chunks retrieved"),
@@ -210,7 +191,7 @@ def run_red_path(user_message: str, *, retrieval_top_n: int = 3) -> tuple[AgentR
             ),
             chunks,
         )
-    top = chunks[0]
+    top = topical[0]
     answer = (
         f"Per policy §{top.section_id} ({top.section_title}):\n\n"
         f"{top.body}\n\n"

@@ -53,6 +53,7 @@ class Clause:
     action_verb: str | None
     cross_refs: list[str] = field(default_factory=list)
     is_seed: bool = False
+    is_general_guideline: bool = False
 
     def to_chroma_metadata(self) -> dict:
         """Return a flat dict suitable for Chroma metadata.
@@ -67,6 +68,7 @@ class Clause:
             "action_verb": self.action_verb or "",
             "cross_refs_json": json.dumps(self.cross_refs),
             "is_seed": self.is_seed,
+            "is_general_guideline": self.is_general_guideline,
         }
 
     def to_dict(self) -> dict:
@@ -133,6 +135,10 @@ def chunk_policy(markdown: str) -> list[Clause]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown)
         section_body = markdown[start:end]
         is_seed = int(section_num) <= 6
+        # §6 ("General Conduct") clauses are cross-cutting: they apply to
+        # every request regardless of topic. Retrieval treats them as
+        # always-on so the agent prompt itself doesn't need to repeat them.
+        is_general_guideline = section_num == "6"
         for clause_id, clause_body in _iter_clauses_in_section(section_num, section_body):
             clauses.append(
                 Clause(
@@ -143,6 +149,7 @@ def chunk_policy(markdown: str) -> list[Clause]:
                     action_verb=_detect_action_verb(clause_body),
                     cross_refs=_extract_cross_refs(clause_body, exclude=clause_id),
                     is_seed=is_seed,
+                    is_general_guideline=is_general_guideline,
                 )
             )
     return clauses

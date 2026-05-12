@@ -62,13 +62,17 @@ def test_adversarial_message_escalates(message: str):
 def test_action_verb_without_injection_still_escalates():
     """A plain action verb ('reset', 'lookup') without injection cues still
     escalates because Red has no tool authorization beyond escalate_to_human.
-    Section cited is §5.1."""
+    Citations come from the §6 general-guidelines bundle — the policy has no
+    Red-specific clause; the cross-cutting general conduct rules justify the
+    refusal regardless of topic."""
     from policy_agent.red_path import run_red_path
 
     response, _ = run_red_path("Please reset my password.")
     assert response.decision == "escalate"
     cited = {c.section_id for c in response.citations}
-    assert "5.1" in cited, f"expected §5.1 citation; got {sorted(cited)}"
+    assert any(c.startswith("6.") for c in cited), (
+        f"expected at least one §6.x (general-conduct) citation; got {sorted(cited)}"
+    )
     assert response.tool_calls == []
 
 

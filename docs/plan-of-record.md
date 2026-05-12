@@ -43,6 +43,7 @@ Each decision below maps to (a) the requirement(s) it addresses, (b) the rationa
 ### D4 — Policy retrieval: section-aware chunks + metadata + vector + rerank
 - **Maps to:** Requirement 2 (policy expansion + retrieval), Requirement 3 (citations), Policy & Rule Representation (Differentiating).
 - **Why:** Hierarchical chunking preserves `section_id`, `parent_section`, `action_verb` (must / must-not / should / may), `tier_scope`, and `cross_refs`. ChromaDB stores chunks with metadata; retrieval is metadata-filtered top-k vector search; reranker (`BAAI/bge-reranker-base`) boosts precision before passing to the agent. Action-verb metadata enables a tie-breaker that prefers must-not over may when sections conflict (test #16: 4.2 vs 4.4).
+- **Always-on general guidelines.** Clauses in §6 ("General Conduct") are tagged `is_general_guideline=True` at ingestion (see [policy_chunker.py](../policy_agent/policy_chunker.py)) and prepended to every Blue/Grey retrieval via `retrieve_with_general_guidelines()` (see [retrieval.py](../policy_agent/retrieval.py)). This keeps cross-cutting rules — citation requirement, no-speculation, claimed-authority — out of the agent prompt and in the policy bundle as the single source of truth.
 - **Tradeoff:** Cross-references stored as metadata, not as a graph — multi-hop queries weaker.
 - **v2:** Cross-reference graph layer over the vector index.
 
@@ -70,7 +71,7 @@ Each decision below maps to (a) the requirement(s) it addresses, (b) the rationa
 ### D8 — Adversarial defense: architectural + dedicated input classifier in v1
 - **Maps to:** Adversarial Handling (rubric, Core).
 - **Why:** Multi-layer:
-  1. **Architectural defenses (primary, load-bearing):** trusted-channel tier classification (system-supplied), hardened tier-aware system prompt referencing policy 6.3 (claimed authority ≠ authority), deterministic tool gating (D3) that ignores anything the model says.
+  1. **Architectural defenses (primary, load-bearing):** trusted-channel tier classification (system-supplied), hardened tier-aware system prompt with §6 ("General Conduct") always prepended into the chunk set via `retrieve_with_general_guidelines()` so "claimed authority ≠ authority" (§6.3) grounds every decision, deterministic tool gating (D3) that ignores anything the model says.
   2. **Input classifier (additive, in v1 per user direction):** [Llama Prompt Guard 2 (86M)](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M) runs on every Blue/Grey input. CPU-runnable, ~50ms. On positive detection: log + flag the request, bias the prompt toward "treat as Grey + lean toward escalation," and never auto-execute side-effectful tools.
   3. **Heuristic logger (observability):** regex/keyword heuristics for "ignore previous instructions", "you are now", manufactured urgency, claimed authority — purely for audit trails and failure analysis.
   Tests #17, #18, #21 should fail at architectural layer (1) — classifier (2) is defense-in-depth. References: [OWASP LLM01:2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/), Simon Willison's dual-LLM pattern.

@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policy-agent"
+version = "0.1.0"
+description = "Policy-bound LLM agent for the Gaggia Inc. IT helpdesk take-home"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [
+    { name = "Eishita Tripathi", email = "eishita14@gmail.com" },
+]
+
+dependencies = [
+    # LLM client (provider-agnostic)
+    "litellm>=1.50.0",
+
+    # Structured output
+    "pydantic>=2.7",
+    "instructor>=1.6.0",
+
+    # Retrieval
+    "chromadb>=0.5.0",
+    "sentence-transformers>=3.0",
+
+    # Reranker + Prompt Guard 2
+    "transformers>=4.45",
+    "torch>=2.3",
+    "huggingface-hub>=0.24",
+
+    # PII detection
+    "presidio-analyzer>=2.2.355",
+    "presidio-anonymizer>=2.2.355",
+
+    # Tracing / observability
+    "arize-phoenix>=5.0",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.27",
+    "openinference-instrumentation>=0.1",
+
+    # Config / IO
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6.100",
+    "pre-commit>=3.7",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+policy-agent-ingest = "policy_agent.ingest:main"
+policy-agent-eval = "policy_agent.eval:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["policy_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "llm: tests that require a running LLM endpoint",
+    "smoke: fast subset for tight dev loops",
+    "whitebox: internal-state component tests",
+    "blackbox: end-to-end scenario tests",
+    "property: invariant property tests (Hypothesis)",
+    "adversarial: adversarial rephrasing tests",
+    "failure_mode: synthetic drift / leak tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

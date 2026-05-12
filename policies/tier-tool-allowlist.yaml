@@ -1,0 +1,44 @@
+# Policy-as-config: tier → tools allowed (D3).
+#
+# This file is the source of truth for what tool calls the dispatcher
+# (PEP) will permit, keyed on the request's trust tier. The dispatcher
+# rejects any call where (tier, tool_name) is not present here, with a
+# logged reason.
+#
+# Per the problem statement:
+#   - Red: only escalate_to_human is unconditional. The agent "may answer
+#     general policy questions" — for Gaggia IT policy, that's via the
+#     agent's RAG (no tool call). For HR-knowledge-base policy questions
+#     (PTO, benefits), Red gets query_hr_database BUT ONLY with
+#     query_type=policy (deterministic argument constraint, never
+#     inferred from the model).
+#   - Blue / Grey: all five tools are allowed at the dispatcher level.
+#     Policy-application beyond tier (per-field PII filtering, individual-
+#     vs-policy HR queries on Blue/Grey, must-not vs may interpretation)
+#     is handled by the agent's reasoning + filter-rules.yaml.
+#
+# Format:
+#   <tier>:
+#     - <tool_name>                 # unconditional access
+#     - tool: <tool_name>           # argument-constrained access
+#       when: { <arg>: <value> }    # only allowed when this matches
+
+Red:
+  - escalate_to_human
+  - tool: query_hr_database
+    when:
+      query_type: policy
+
+Blue:
+  - reset_password
+  - lookup_employee
+  - grant_file_access
+  - query_hr_database
+  - escalate_to_human
+
+Grey:
+  - reset_password
+  - lookup_employee
+  - grant_file_access
+  - query_hr_database
+  - escalate_to_human

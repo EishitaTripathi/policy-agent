@@ -1,0 +1,119 @@
+# Policy-as-config: tag-driven output filter ruleset (D2).
+#
+# This file is the source of truth for which fields of a tool response
+# are disclosed to which requester. The filter (D2) consumes this file
+# at runtime; tool response schemas annotate each field with a `tag`
+# (defined in the tool registry). The pair (tag, requester_relationship)
+# determines allowed | denied.
+#
+# Default policy: any (tag, relationship) NOT listed here is DENIED.
+# Adding a new tool field with a new tag requires updating this file.
+#
+# requester_relationship is set deterministically by the request handler:
+#   self                : requester.employee_id == subject.employee_id
+#   manager_in_chain    : upstream-verified manager of subject
+#                         (per §4.4: "verified manager in that employee's
+#                          reporting chain")
+#   peer                : requester is another employee, no manager rel.
+#   other               : everything else (vendor, external, unknown)
+#
+# The grounding for each rule is in the policy: §2.1, §2.2, §2.3 govern
+# directory disclosure; §4.2/§4.4 govern HR data; §15.3 (expanded)
+# explicitly grants self-service access for an employee's own records.
+
+default: denied
+
+rules:
+
+  # --- Employee directory (§2.1, §2.2, §2.3) ---
+
+  directory_basic:                  # name, department, title, office, manager
+    self: allowed                   # §15.3
+    manager_in_chain: allowed       # §2.1 (directory info)
+    peer: allowed                   # §2.1
+    other: allowed                  # §2.1 (treated as directory)
+
+  directory_email:                  # work_email
+    self: allowed                   # §15.3
+    manager_in_chain: allowed       # §2.3
+    peer: allowed                   # §2.3
+    other: allowed                  # §2.3
+
+  directory_phone:                  # work_phone
+    self: allowed                   # §15.3
+    manager_in_chain: allowed       # §2.3
+    peer: allowed                   # §2.3
+    other: allowed                  # §2.3
+
+  personal_contact:                 # personal_email, personal_phone, home_address
+    self: allowed                   # §15.3 (self-service carve-out, expanded)
+    manager_in_chain: denied        # §2.2
+    peer: denied                    # §2.2
+    other: denied                   # §2.2
+
+  # --- HR data (§4.2, §4.4, §15.3) ---
+
+  compensation:                     # salary, bonus_target
+    self: allowed                   # §15.3 (own-record self-service)
+    manager_in_chain: denied        # §4.2 (must not disclose compensation)
+    peer: denied                    # §4.2
+    other: denied                   # §4.2
+
+  performance:                      # performance_rating, last_review
+    self: allowed                   # §15.3
+    manager_in_chain: denied        # §4.2 (must not disclose performance)
+    peer: denied                    # §4.2
+    other: denied                   # §4.2
+
+  disciplinary:                     # disciplinary_actions
+    self: allowed                   # §15.3 (own record)
+    manager_in_chain: denied        # §4.2 (must not disclose disciplinary)
+    peer: denied                    # §4.2
+    other: denied                   # §4.2
+
+  employment_status:                # employment_status (active / inactive)
+    self: allowed                   # employee can see their own
+    manager_in_chain: allowed       # §4.4 (verified manager may confirm
+                                    #       active status for direct report)
+    peer: denied                    # §4.2 (employment status changes)
+    other: denied                   # §4.2
+
+  # --- File / drive metadata (§3.x — drive metadata is not PII) ---
+
+  drive_metadata:                   # drive_id, drive_type, owning_team,
+                                    # access_granted, expires
+    self: allowed
+    manager_in_chain: allowed
+    peer: allowed
+    other: allowed
+
+  # --- Reset-password output ---
+
+  account_type:                     # standard / admin / executive / service
+    self: allowed
+    manager_in_chain: allowed
+    peer: allowed
+    other: allowed
+
+  temp_credential:                  # temp_password (sensitive — only the
+                                    # account holder may receive it)
+    self: allowed
+    manager_in_chain: denied
+    peer: denied
+    other: denied
+
+  # --- HR policy answers (free text, not PII; allowed by §4.1) ---
+
+  hr_policy_text:
+    self: allowed
+    manager_in_chain: allowed
+    peer: allowed
+    other: allowed
+
+  # --- Escalation result metadata ---
+
+  ticket_metadata:                  # ticket_id, estimated_response
+    self: allowed
+    manager_in_chain: allowed
+    peer: allowed
+    other: allowed
